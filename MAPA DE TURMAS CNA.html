@@ -1,0 +1,841 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Mapa de Turmas CNA</title>
+    <!-- Tailwind CSS CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Lucide Icons CDN -->
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <!-- SheetJS (XLSX) CDN -->
+    <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+    <!-- Firebase SDK Imports -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, doc, setDoc, getDoc, onSnapshot } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'cna-mapa-turmas-default';
+        const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {
+            apiKey: "AIzaSyDummyKeyForLocalTesting",
+            authDomain: "dummy.firebaseapp.com",
+            projectId: "dummy-project"
+        };
+
+        let app, db, auth;
+        try {
+            app = initializeApp(firebaseConfig);
+            db = getFirestore(app);
+            auth = getAuth(app);
+            
+            const initAuth = async () => {
+                try {
+                    if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+                        await signInWithCustomToken(auth, __initial_auth_token);
+                    } else {
+                        await signInAnonymously(auth);
+                    }
+                    console.log("Firebase Authenticated successfully.");
+                    window.dispatchEvent(new Event('firebase-ready'));
+                } catch (e) {
+                    console.error("Auth error:", e);
+                }
+            };
+            initAuth();
+        } catch (err) {
+            console.warn("Firebase not fully configured, running in local-only mode.", err);
+        }
+
+        window.firebaseDb = { 
+            db, 
+            setDoc, 
+            doc,
+            onSnapshot, 
+            getRef: (unidade) => {
+                if (!db) return null;
+                const docId = `mapa_${unidade.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/\s+/g, '_')}`;
+                return doc(db, 'artifacts', appId, 'maps', docId);
+            }
+        };
+    </script>
+    <style>
+        /* Regras avançadas para Impressão e Geração de PDF com Cores e Estilos */
+        @media print {
+            .no-print { display: none !important; }
+            body { 
+                background-color: white !important; 
+                color: black !important; 
+                -webkit-print-color-adjust: exact !important; 
+                print-color-adjust: exact !important; 
+            }
+            tr, td, th, div, span {
+                -webkit-print-color-adjust: exact !important;
+                print-color-adjust: exact !important;
+            }
+            .print-break-inside-avoid { break-inside: avoid; page-break-inside: avoid; }
+            .shadow-sm, .shadow-md, .shadow-lg { box-shadow: none !important; }
+            .border { border-color: #cbd5e1 !important; }
+        }
+    </style>
+</head>
+<body class="bg-slate-100 text-slate-800 min-h-screen flex flex-col font-sans">
+
+    <!-- Header -->
+    <header class="bg-slate-900 text-white shadow-lg py-4 px-6 border-b-4 border-red-600 no-print">
+        <div class="max-w-7xl mx-auto flex flex-col md:flex-row justify-between items-center gap-4">
+            <div class="flex items-center space-x-3">
+                <div class="p-2 bg-red-600/10 rounded-lg border border-red-600/20 text-red-500">
+                    <i data-lucide="calendar-range" class="w-6 h-6"></i>
+                </div>
+                <div>
+                    <h1 class="text-xl font-bold tracking-wide text-slate-100">
+                        Mapa de Turmas CNA
+                    </h1>
+                    <p class="text-xs text-slate-400 font-medium">Organização e Controle Semestral Sincronizado</p>
+                </div>
+            </div>
+
+            <!-- Controles do Header: Unidade + Semestre -->
+            <div class="flex flex-wrap items-center gap-3">
+                <div class="flex items-center bg-slate-800 p-1.5 rounded-xl border border-slate-700 shadow-inner">
+                    <button id="tab-santa-monica" onclick="selecionarUnidade('Santa Mônica')" class="px-3.5 py-1.5 rounded-lg text-xs font-bold transition-all bg-red-600 text-white shadow-md">
+                        CNA Santa Mônica
+                    </button>
+                    <button id="tab-sao-mateus" onclick="selecionarUnidade('São Mateus')" class="px-3.5 py-1.5 rounded-lg text-xs font-bold transition-all text-slate-300 hover:text-white">
+                        CNA São Mateus
+                    </button>
+                </div>
+
+                <div class="flex items-center bg-slate-800 px-3 py-1.5 rounded-xl border border-slate-700 gap-2">
+                    <label for="semestre-input" class="text-xs font-semibold text-slate-300">Semestre:</label>
+                    <input type="text" id="semestre-input" value="2026/2" oninput="atualizarTituloGeral()" class="bg-slate-900 border border-slate-700 text-white font-bold text-xs rounded px-2 py-1 w-20 text-center focus:ring-1 focus:ring-red-500 focus:outline-none">
+                </div>
+            </div>
+        </div>
+    </header>
+
+    <!-- Main Container -->
+    <main class="max-w-7xl mx-auto px-4 flex-1 w-full my-6">
+        
+        <!-- Identificação do Mapa para Exibição / Impressão e Barra de Congelamento -->
+        <div class="mb-6 bg-white border-l-4 border-red-600 rounded-r-xl p-4 shadow-sm flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
+            <div>
+                <h2 id="titulo-mapa-display" class="text-xl font-extrabold text-slate-900 tracking-tight">
+                    MAPA DE TURMAS CNA SANTA MÔNICA - 2026/2
+                </h2>
+                <p class="text-xs text-slate-500 font-medium mt-0.5">Visão consolidada por dia da semana e ordem cronológica</p>
+            </div>
+            
+            <div class="flex items-center gap-3">
+                <div id="badge-resumo-rapido" class="hidden flex items-center gap-2 bg-slate-50 px-3 py-1.5 rounded-lg border border-slate-200 text-xs font-semibold text-slate-700">
+                    <span><strong id="stat-total-turmas" class="text-red-600">0</strong> Turmas</span>
+                    <span class="text-slate-300">•</span>
+                    <span><strong id="stat-total-alunos" class="text-slate-900">0</strong> Alunos</span>
+                </div>
+
+                <!-- Botão de Congelar / Descongelar Relatório -->
+                <div id="freeze-controls-container" class="hidden flex items-center gap-2">
+                    <button id="btn-toggle-freeze" onclick="toggleCongelarRelatorio()" class="px-3.5 py-2 rounded-lg text-xs font-bold transition-all flex items-center gap-1.5 shadow-sm bg-amber-600 hover:bg-amber-700 text-white">
+                        <i data-lucide="lock" class="w-4 h-4"></i> <span id="freeze-btn-text">Congelar Relatório</span>
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Passo 1: Upload e Configuração do Relatório BOX -->
+        <section id="section-upload" class="bg-white rounded-xl shadow-sm border border-slate-200 p-6 mb-6 no-print">
+            <h2 class="text-lg font-semibold text-slate-800 mb-4 flex items-center gap-2">
+                <i data-lucide="file-spreadsheet" class="text-red-600"></i>
+                1. Carregar Relatório do BOX (Excel)
+            </h2>
+            
+            <div id="drop-zone" class="border-2 border-dashed border-slate-300 rounded-xl p-8 text-center hover:border-red-500 transition-colors cursor-pointer bg-slate-50/50">
+                <input type="file" id="file-input" accept=".xlsx, .xls" class="hidden">
+                <i data-lucide="upload-cloud" class="w-12 h-12 mx-auto text-slate-400 mb-2"></i>
+                <p class="text-slate-700 font-medium mb-1">Arraste e solte o relatório do BOX aqui</p>
+                <p class="text-xs text-slate-400 mb-4">Suporta arquivos .xlsx e .xls</p>
+                <button onclick="document.getElementById('file-input').click()" class="bg-slate-800 hover:bg-slate-900 text-white text-sm font-medium px-5 py-2.5 rounded-lg transition-colors shadow-sm">
+                    Selecionar Planilha
+                </button>
+            </div>
+
+            <!-- Mapeamento de Colunas do Excel -->
+            <div id="mapping-container" class="hidden mt-6 pt-5 border-t border-slate-200">
+                <p class="text-xs font-bold uppercase tracking-wider text-slate-500 mb-3">Confirme o Mapeamento das Colunas:</p>
+                <div class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-4">
+                    <div>
+                        <label class="text-xs font-medium text-slate-700 block mb-1">Horário / Dia:</label>
+                        <select id="col-horario" class="w-full border border-slate-300 rounded-lg p-2 text-xs bg-white focus:ring-1 focus:ring-red-500"></select>
+                    </div>
+                    <div>
+                        <label class="text-xs font-medium text-slate-700 block mb-1">Professor:</label>
+                        <select id="col-professor" class="w-full border border-slate-300 rounded-lg p-2 text-xs bg-white focus:ring-1 focus:ring-red-500"></select>
+                    </div>
+                    <div>
+                        <label class="text-xs font-medium text-slate-700 block mb-1">Turma:</label>
+                        <select id="col-turma" class="w-full border border-slate-300 rounded-lg p-2 text-xs bg-white focus:ring-1 focus:ring-red-500"></select>
+                    </div>
+                    <div>
+                        <label class="text-xs font-medium text-slate-700 block mb-1">Nº de Alunos:</label>
+                        <select id="col-alunos" class="w-full border border-slate-300 rounded-lg p-2 text-xs bg-white focus:ring-1 focus:ring-red-500"></select>
+                    </div>
+                    <div>
+                        <label class="text-xs font-medium text-slate-700 block mb-1">Data Início:</label>
+                        <select id="col-inicio" class="w-full border border-slate-300 rounded-lg p-2 text-xs bg-white focus:ring-1 focus:ring-red-500"></select>
+                    </div>
+                    <div>
+                        <label class="text-xs font-medium text-slate-700 block mb-1">Data Término:</label>
+                        <select id="col-termino" class="w-full border border-slate-300 rounded-lg p-2 text-xs bg-white focus:ring-1 focus:ring-red-500"></select>
+                    </div>
+                    <div>
+                        <label class="text-xs font-medium text-slate-700 block mb-1">Sala:</label>
+                        <select id="col-sala" class="w-full border border-slate-300 rounded-lg p-2 text-xs bg-white focus:ring-1 focus:ring-red-500"></select>
+                    </div>
+                    <div class="flex items-end">
+                        <button id="btn-gerar-mapa" class="w-full bg-red-600 hover:bg-red-700 text-white text-xs font-bold px-4 py-2.5 rounded-lg transition-colors flex items-center justify-center gap-2 shadow-sm">
+                            <i data-lucide="layout-grid" class="w-4 h-4"></i> Gerar Mapa de Turmas
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Status de Relatório Congelado (Banner informativo) -->
+        <div id="frozen-banner" class="hidden mb-6 bg-emerald-50 border border-emerald-200 text-emerald-800 px-4 py-3 rounded-xl flex items-center justify-between shadow-sm no-print">
+            <div class="flex items-center gap-2">
+                <i data-lucide="check-circle-2" class="w-5 h-5 text-emerald-600"></i>
+                <span class="text-xs font-bold">Relatório CONGELADO e salvo localmente para esta unidade.</span>
+            </div>
+            <button onclick="toggleCongelarRelatorio()" class="text-xs bg-white border border-emerald-300 text-emerald-700 px-3 py-1 rounded-lg font-semibold hover:bg-emerald-100 transition-colors">
+                Descongelar / Substituir
+            </button>
+        </div>
+
+        <!-- Passo 2: Visualização do Mapa de Turmas -->
+        <section id="dashboard" class="hidden space-y-6">
+            
+            <!-- Barra de Ações e Filtro de Dias -->
+            <div class="bg-white rounded-xl shadow-sm border border-slate-200 p-4 flex flex-col md:flex-row justify-between items-center gap-4 no-print">
+                <!-- Tabs de Dias da Semana -->
+                <div class="flex flex-wrap gap-1.5 bg-slate-100 p-1.5 rounded-xl border border-slate-200">
+                    <button onclick="filtrarDia('TODOS')" id="tab-dia-TODOS" class="px-3 py-1.5 rounded-lg text-xs font-bold transition-all bg-slate-900 text-white shadow-sm">
+                        TODOS OS DIAS
+                    </button>
+                    <button onclick="filtrarDia('SEG_QUA')" id="tab-dia-SEG_QUA" class="px-3 py-1.5 rounded-lg text-xs font-bold transition-all text-slate-600 hover:bg-white">
+                        2ª E 4ª FEIRA
+                    </button>
+                    <button onclick="filtrarDia('TER_QUI')" id="tab-dia-TER_QUI" class="px-3 py-1.5 rounded-lg text-xs font-bold transition-all text-slate-600 hover:bg-white">
+                        3ª E 5ª FEIRA
+                    </button>
+                    <button onclick="filtrarDia('TERCA')" id="tab-dia-TERCA" class="px-3 py-1.5 rounded-lg text-xs font-bold transition-all text-slate-600 hover:bg-white">
+                        TERÇA-FEIRA
+                    </button>
+                    <button onclick="filtrarDia('QUINTA')" id="tab-dia-QUINTA" class="px-3 py-1.5 rounded-lg text-xs font-bold transition-all text-slate-600 hover:bg-white">
+                        QUINTA-FEIRA
+                    </button>
+                    <button onclick="filtrarDia('SEXTA')" id="tab-dia-SEXTA" class="px-3 py-1.5 rounded-lg text-xs font-bold transition-all text-slate-600 hover:bg-white">
+                        SEXTA-FEIRA
+                    </button>
+                    <button onclick="filtrarDia('SABADO')" id="tab-dia-SABADO" class="px-3 py-1.5 rounded-lg text-xs font-bold transition-all text-slate-600 hover:bg-white">
+                        SÁBADO
+                    </button>
+                </div>
+
+                <!-- Botões Exportar e Imprimir -->
+                <div class="flex items-center gap-2">
+                    <button onclick="window.print()" class="bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-300 px-3.5 py-2 rounded-lg text-xs font-medium flex items-center gap-1.5 transition-colors">
+                        <i data-lucide="printer" class="w-4 h-4"></i> Imprimir / PDF
+                    </button>
+                    <button id="btn-export-mapa" class="bg-slate-800 hover:bg-slate-900 text-white px-4 py-2 rounded-lg text-xs font-medium flex items-center gap-1.5 transition-colors shadow-sm">
+                        <i data-lucide="download" class="w-4 h-4"></i> Exportar Mapa Excel
+                    </button>
+                </div>
+            </div>
+
+            <!-- Tabelas Separadas por Bloco de Dia -->
+            <div id="mapa-blocos-container" class="space-y-8">
+                <!-- Inserido dinamicamente via JS -->
+            </div>
+
+        </section>
+
+    </main>
+
+    <script>
+        // Inicializar ícones Lucide
+        lucide.createIcons();
+
+        // Variáveis de Estado
+        let unidadeAtual = 'Santa Mônica';
+        let rawExcelData = [];
+        let mapData = {
+            SEG_QUA: [],
+            TER_QUI: [],
+            TERCA: [],
+            QUINTA: [],
+            SEXTA: [],
+            SABADO: [],
+            OUTROS: []
+        };
+        let diaFiltroAtual = 'TODOS';
+        let isRelatorioCongelado = false;
+        let unsubscribeMapa = null;
+
+        // Elementos do DOM
+        const semestreInput = document.getElementById('semestre-input');
+        const tituloMapaDisplay = document.getElementById('titulo-mapa-display');
+        const dropZone = document.getElementById('drop-zone');
+        const fileInput = document.getElementById('file-input');
+        const mappingContainer = document.getElementById('mapping-container');
+        const dashboard = document.getElementById('dashboard');
+        const mapaBlocosContainer = document.getElementById('mapa-blocos-container');
+        const badgeResumoRapido = document.getElementById('badge-resumo-rapido');
+        const statTotalTurmas = document.getElementById('stat-total-turmas');
+        const statTotalAlunos = document.getElementById('stat-total-alunos');
+        const sectionUpload = document.getElementById('section-upload');
+        const frozenBanner = document.getElementById('frozen-banner');
+        const freezeControlsContainer = document.getElementById('freeze-controls-container');
+        const freezeBtnText = document.getElementById('freeze-btn-text');
+
+        // Função utilitária para gerar a chave do localStorage
+        function getStorageKey(unidade) {
+            return `cna_mapa_${unidade.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/\s+/g, '_')}`;
+        }
+
+        // Inicialização
+        document.addEventListener('DOMContentLoaded', () => {
+            observarDadosNuvem();
+        });
+
+        window.addEventListener('firebase-ready', () => {
+            observarDadosNuvem();
+        });
+
+        // Alternar Unidades
+        window.selecionarUnidade = function(unidade) {
+            unidadeAtual = unidade;
+            const btnSM = document.getElementById('tab-santa-monica');
+            const btnMateus = document.getElementById('tab-sao-mateus');
+
+            if (unidade === 'Santa Mônica') {
+                btnSM.className = "px-3.5 py-1.5 rounded-lg text-xs font-bold transition-all bg-red-600 text-white shadow-md";
+                btnMateus.className = "px-3.5 py-1.5 rounded-lg text-xs font-bold transition-all text-slate-300 hover:text-white";
+            } else {
+                btnMateus.className = "px-3.5 py-1.5 rounded-lg text-xs font-bold transition-all bg-red-600 text-white shadow-md";
+                btnSM.className = "px-3.5 py-1.5 rounded-lg text-xs font-bold transition-all text-slate-300 hover:text-white";
+            }
+
+            atualizarTituloGeral();
+            observarDadosNuvem();
+        };
+
+        function atualizarTituloGeral() {
+            const semestre = semestreInput.value.trim() || '2026/2';
+            tituloMapaDisplay.textContent = `MAPA DE TURMAS CNA ${unidadeAtual.toUpperCase()} - ${semestre}`;
+        }
+
+        // Observar e carregar dados (localStorage + Firebase)
+        function observarDadosNuvem() {
+            const key = getStorageKey(unidadeAtual);
+            const dadosLocais = localStorage.getItem(key);
+            let carregouLocal = false;
+
+            if (dadosLocais) {
+                try {
+                    const parsed = JSON.parse(dadosLocais);
+                    if (parsed && parsed.mapData) {
+                        mapData = Object.assign({ SEG_QUA: [], TER_QUI: [], TERCA: [], QUINTA: [], SEXTA: [], SABADO: [], OUTROS: [] }, parsed.mapData);
+                        semestreInput.value = parsed.semestre || semestreInput.value;
+                        isRelatorioCongelado = true;
+                        atualizarTituloGeral();
+                        renderMapa();
+                        aplicarEstadoCongelamentoUI(true);
+                        carregouLocal = true;
+                    }
+                } catch (e) {
+                    console.error("Erro ao carregar dados do localStorage:", e);
+                }
+            }
+
+            if (!carregouLocal) {
+                resetarEstadoParaNovoUpload();
+            }
+
+            if (!window.firebaseDb || !window.firebaseDb.db) return;
+            
+            if (unsubscribeMapa) {
+                unsubscribeMapa();
+                unsubscribeMapa = null;
+            }
+
+            const { onSnapshot, getRef } = window.firebaseDb;
+            const docRef = getRef(unidadeAtual);
+            if (!docRef) return;
+
+            unsubscribeMapa = onSnapshot(docRef, (docSnap) => {
+                if (docSnap.exists()) {
+                    const data = docSnap.data();
+                    if (data && data.mapData && data.semestre) {
+                        mapData = Object.assign({ SEG_QUA: [], TER_QUI: [], TERCA: [], QUINTA: [], SEXTA: [], SABADO: [], OUTROS: [] }, data.mapData);
+                        semestreInput.value = data.semestre;
+                        isRelatorioCongelado = true;
+                        atualizarTituloGeral();
+                        renderMapa();
+                        aplicarEstadoCongelamentoUI(true);
+
+                        localStorage.setItem(key, JSON.stringify(data));
+                    }
+                }
+            }, (error) => {
+                console.warn("Erro no listener em tempo real:", error);
+            });
+        }
+
+        async function salvarDadosNuvem() {
+            const payload = {
+                semestre: semestreInput.value,
+                unidade: unidadeAtual,
+                mapData: mapData,
+                updatedAt: new Date().toISOString()
+            };
+
+            const key = getStorageKey(unidadeAtual);
+            localStorage.setItem(key, JSON.stringify(payload));
+
+            if (!window.firebaseDb || !window.firebaseDb.db) return;
+            try {
+                const { setDoc, getRef } = window.firebaseDb;
+                const docRef = getRef(unidadeAtual);
+                if (!docRef) return;
+
+                await setDoc(docRef, payload);
+            } catch (err) {
+                console.warn("Aviso: Nuvem indisponível, os dados estão garantidos no armazenamento local.", err);
+            }
+        }
+
+        async function limparDadosNuvem() {
+            const key = getStorageKey(unidadeAtual);
+            localStorage.removeItem(key);
+
+            if (!window.firebaseDb || !window.firebaseDb.db) return;
+            try {
+                const { setDoc, getRef } = window.firebaseDb;
+                const docRef = getRef(unidadeAtual);
+                if (!docRef) return;
+
+                await setDoc(docRef, {
+                    semestre: semestreInput.value,
+                    unidade: unidadeAtual,
+                    mapData: { SEG_QUA: [], TER_QUI: [], TERCA: [], QUINTA: [], SEXTA: [], SABADO: [], OUTROS: [] },
+                    updatedAt: new Date().toISOString()
+                });
+            } catch (err) {
+                console.warn("Aviso ao limpar na nuvem:", err);
+            }
+        }
+
+        function resetarEstadoParaNovoUpload() {
+            isRelatorioCongelado = false;
+            mapData = { SEG_QUA: [], TER_QUI: [], TERCA: [], QUINTA: [], SEXTA: [], SABADO: [], OUTROS: [] };
+            dashboard.classList.add('hidden');
+            sectionUpload.classList.remove('hidden');
+            frozenBanner.classList.add('hidden');
+            freezeControlsContainer.classList.add('hidden');
+            badgeResumoRapido.classList.add('hidden');
+        }
+
+        function aplicarEstadoCongelamentoUI(congelado) {
+            isRelatorioCongelado = congelado;
+            if (congelado) {
+                sectionUpload.classList.add('hidden');
+                frozenBanner.classList.remove('hidden');
+                freezeControlsContainer.classList.remove('hidden');
+                freezeBtnText.textContent = "Relatório Congelado";
+            } else {
+                sectionUpload.classList.remove('hidden');
+                frozenBanner.classList.add('hidden');
+                freezeControlsContainer.classList.add('hidden');
+            }
+        }
+
+        window.toggleCongelarRelatorio = async function() {
+            if (isRelatorioCongelado) {
+                if (confirm("Deseja descongelar e substituir o relatório atual por uma nova planilha?")) {
+                    await limparDadosNuvem();
+                    resetarEstadoParaNovoUpload();
+                }
+            }
+        };
+
+        // Drag & Drop
+        dropZone.addEventListener('dragover', (e) => { e.preventDefault(); dropZone.classList.add('border-red-500', 'bg-red-50/20'); });
+        dropZone.addEventListener('dragleave', () => { dropZone.classList.remove('border-red-500', 'bg-red-50/20'); });
+        dropZone.addEventListener('drop', (e) => {
+            e.preventDefault();
+            dropZone.classList.remove('border-red-500', 'bg-red-50/20');
+            if (e.dataTransfer.files.length) handleFile(e.dataTransfer.files[0]);
+        });
+        fileInput.addEventListener('change', (e) => {
+            if (e.target.files.length) handleFile(e.target.files[0]);
+        });
+
+        function handleFile(file) {
+            const reader = new FileReader();
+            reader.onload = function (e) {
+                const data = new Uint8Array(e.target.result);
+                const workbook = XLSX.read(data, { type: 'array' });
+                const firstSheetName = workbook.SheetNames[0];
+                const worksheet = workbook.Sheets[firstSheetName];
+
+                rawExcelData = XLSX.utils.sheet_to_json(worksheet, { header: 1 });
+
+                if (rawExcelData.length > 0) {
+                    populateColumnSelectors(rawExcelData[0]);
+                }
+            };
+            reader.readAsArrayBuffer(file);
+        }
+
+        function populateColumnSelectors(headers) {
+            const selectors = [
+                { id: 'col-horario', keywords: [/horario|horário|dias|dia/i] },
+                { id: 'col-professor', keywords: [/professor|docente|instrutor/i] },
+                { id: 'col-turma', keywords: [/turma|codigo|código|nivel/i] },
+                { id: 'col-alunos', keywords: [/aluno|alunos|qtd|matr|vagas/i] },
+                { id: 'col-inicio', keywords: [/inicio|início|data in/i] },
+                { id: 'col-termino', keywords: [/termino|término|fim|data ter/i] },
+                { id: 'col-sala', keywords: [/sala|local|ambiente/i] }
+            ];
+
+            selectors.forEach(sel => {
+                const selectElem = document.getElementById(sel.id);
+                selectElem.innerHTML = '<option value="-1">-- Não Mapeado --</option>';
+                
+                headers.forEach((h, idx) => {
+                    const text = h ? h.toString() : `Coluna ${idx + 1}`;
+                    const opt = document.createElement('option');
+                    opt.value = idx;
+                    opt.textContent = text;
+                    selectElem.appendChild(opt);
+                });
+
+                const matchIndex = headers.findIndex(h => h && sel.keywords.some(k => k.test(h.toString())));
+                if (matchIndex !== -1) {
+                    selectElem.value = matchIndex;
+                }
+            });
+
+            mappingContainer.classList.remove('hidden');
+        }
+
+        document.getElementById('btn-gerar-mapa').addEventListener('click', async () => {
+            const idxHorario = parseInt(document.getElementById('col-horario').value);
+            const idxProf = parseInt(document.getElementById('col-professor').value);
+            const idxTurma = parseInt(document.getElementById('col-turma').value);
+            const idxAlunos = parseInt(document.getElementById('col-alunos').value);
+            const idxInicio = parseInt(document.getElementById('col-inicio').value);
+            const idxTermino = parseInt(document.getElementById('col-termino').value);
+            const idxSala = parseInt(document.getElementById('col-sala').value);
+
+            mapData = { SEG_QUA: [], TER_QUI: [], TERCA: [], QUINTA: [], SEXTA: [], SABADO: [], OUTROS: [] };
+
+            for (let i = 1; i < rawExcelData.length; i++) {
+                const row = rawExcelData[i];
+                if (!row || row.length === 0) continue;
+
+                const turmaRaw = getRowVal(row, idxTurma);
+                if (!turmaRaw) continue;
+
+                const upperTurma = turmaRaw.toUpperCase();
+                if (upperTurma.startsWith('TOTAL') || upperTurma.startsWith('SUBTOTAL') || upperTurma.startsWith('SOMA')) continue;
+
+                const horarioRaw = getRowVal(row, idxHorario);
+                const professor = getRowVal(row, idxProf) || 'A DEFINIR';
+                const alunos = parseInt(getRowVal(row, idxAlunos)) || 0;
+                const inicio = getRowVal(row, idxInicio) || '-';
+                const termino = getRowVal(row, idxTermino) || '-';
+                const salaRaw = getRowVal(row, idxSala) || '-';
+
+                const turmaFormatada = formatarNomeTurmaCNA(turmaRaw);
+                const { blocoDia, horarioLimpo, minutosInicio } = processarEClassificarHorario(horarioRaw);
+                const salaFormatada = formatarNomeSala(salaRaw);
+
+                const item = {
+                    horario: horarioLimpo || 'A definir',
+                    minutosInicio: minutosInicio,
+                    professor: professor,
+                    turma: turmaFormatada,
+                    alunos: alunos,
+                    inicio: inicio,
+                    termino: termino,
+                    sala: salaFormatada
+                };
+
+                if (mapData[blocoDia]) {
+                    mapData[blocoDia].push(item);
+                } else {
+                    mapData['OUTROS'].push(item);
+                }
+            }
+
+            Object.keys(mapData).forEach(bloco => {
+                mapData[bloco].sort((a, b) => a.minutosInicio - b.minutosInicio);
+            });
+
+            renderMapa();
+            await salvarDadosNuvem();
+            aplicarEstadoCongelamentoUI(true);
+        });
+
+        function getRowVal(row, idx) {
+            if (idx === -1 || idx >= row.length || row[idx] === undefined || row[idx] === null) return '';
+            return row[idx].toString().trim();
+        }
+
+        function formatarNomeTurmaCNA(codigoRaw) {
+            if (!codigoRaw) return '';
+            let nome = codigoRaw.trim();
+
+            if (nome.toUpperCase().includes('LK') && nome.toUpperCase().includes('_YD')) {
+                nome = nome.replace(/_YD/gi, '');
+            }
+
+            nome = nome.replace(/Teen_UP/gi, 'TEENS')
+                      .replace(/TEEN_UP/gi, 'TEENS')
+                      .replace(/A1-1/gi, 'FLY1')
+                      .replace(/A1-2/gi, 'FLY2')
+                      .replace(/A2-1/gi, 'QUEST1')
+                      .replace(/A2-2/gi, 'QUEST2')
+                      .replace(/B1-1/gi, 'RISE1')
+                      .replace(/B1-2/gi, 'RISE2')
+                      .replace(/B1-3/gi, 'RISE3');
+
+            return nome;
+        }
+
+        function processarEClassificarHorario(strHorario) {
+            const str = (strHorario || '').toUpperCase();
+            let blocoDia = 'OUTROS';
+
+            const temTerca = str.includes('3ª') || str.includes('TER');
+            const temQuinta = str.includes('5ª') || str.includes('QUI');
+
+            if (str.includes('2ª') || str.includes('4ª') || str.includes('SEG') || str.includes('QUA')) {
+                blocoDia = 'SEG_QUA';
+            } else if (temTerca && temQuinta) {
+                blocoDia = 'TER_QUI';
+            } else if (temTerca && !temQuinta) {
+                blocoDia = 'TERCA';
+            } else if (temQuinta && !temTerca) {
+                blocoDia = 'QUINTA';
+            } else if (str.includes('SEX') || str.includes('6ª')) {
+                blocoDia = 'SEXTA';
+            } else if (str.includes('SAB') || str.includes('SÁB') || str.includes('SÁBADO')) {
+                blocoDia = 'SABADO';
+            }
+
+            const timeMatches = str.match(/\d{1,2}[:hH]\d{2}/g);
+            let minutosInicio = 9999;
+            let horarioLimpo = strHorario;
+
+            if (timeMatches && timeMatches.length >= 2) {
+                const inicioStr = timeMatches[0].replace(/[hH]/, ':');
+                const fimStr = timeMatches[timeMatches.length - 1].replace(/[hH]/, ':');
+                horarioLimpo = `${inicioStr} - ${fimStr}`;
+
+                const [h, m] = inicioStr.split(':').map(Number);
+                minutosInicio = (h || 0) * 60 + (m || 0);
+            } else if (timeMatches && timeMatches.length === 1) {
+                const inicioStr = timeMatches[0].replace(/[hH]/, ':');
+                horarioLimpo = inicioStr;
+
+                const [h, m] = inicioStr.split(':').map(Number);
+                minutosInicio = (h || 0) * 60 + (m || 0);
+            } else {
+                horarioLimpo = strHorario.replace(/SAB|SÁB|SÁBADO|SEG|QUA|TER|QUI|SEX|\(\vert{}\)/gi, '').trim();
+            }
+
+            return { blocoDia, horarioLimpo, minutosInicio };
+        }
+
+        function formatarNomeSala(salaRaw) {
+            if (!salaRaw || salaRaw === '-') return '-';
+
+            let sala = salaRaw.toUpperCase();
+
+            sala = sala.replace(/\s*-\s*\d+[º°]?\s*ANDAR/gi, '')
+                       .replace(/\d+[º°]?\s*ANDAR/gi, '')
+                       .replace(/TÉRREO/gi, '')
+                       .replace(/\s+/g, ' ')
+                       .trim();
+
+            return sala;
+        }
+
+        function obterCorPorBlocoHorario(minutosInicio) {
+            if (minutosInicio >= 9999) return 'bg-white hover:bg-slate-100/60';
+
+            const horaIndice = Math.floor((minutosInicio - 420) / 60);
+            
+            const cicloCores = [
+                'bg-red-100 hover:bg-red-200/60',      // Vermelho (Quente)
+                'bg-sky-100 hover:bg-sky-200/60',        // Azul (Fria)
+                'bg-amber-100 hover:bg-amber-200/60',    // Amarelo (Quente)
+                'bg-emerald-100 hover:bg-emerald-200/60',// Verde (Fria)
+                'bg-orange-100 hover:bg-orange-200/60'   // Laranja (Quente)
+            ];
+
+            const indexCor = ((horaIndice % cicloCores.length) + cicloCores.length) % cicloCores.length;
+            return cicloCores[indexCor];
+        }
+
+        function renderMapa() {
+            dashboard.classList.remove('hidden');
+            mapaBlocosContainer.innerHTML = '';
+
+            let totalTurmasGeral = 0;
+            let totalAlunosGeral = 0;
+
+            const blocosConfig = [
+                { key: 'SEG_QUA', titulo: 'SEGUNDA E QUARTA-FEIRA', corBadge: 'bg-red-600' },
+                { key: 'TER_QUI', titulo: 'TERÇA E QUINTA-FEIRA', corBadge: 'bg-slate-800' },
+                { key: 'TERCA', titulo: 'TERÇA-FEIRA', corBadge: 'bg-red-700' },
+                { key: 'QUINTA', titulo: 'QUINTA-FEIRA', corBadge: 'bg-amber-700' },
+                { key: 'SEXTA', titulo: 'SEXTA-FEIRA', corBadge: 'bg-red-600' },
+                { key: 'SABADO', titulo: 'SÁBADO', corBadge: 'bg-slate-900' },
+                { key: 'OUTROS', titulo: 'OUTROS DIAS / A DEFINIR', corBadge: 'bg-amber-600' }
+            ];
+
+            blocosConfig.forEach(bloco => {
+                const turmas = mapData[bloco.key] || [];
+                if (turmas.length === 0) return;
+
+                const totalAlunosBloco = turmas.reduce((sum, t) => sum + t.alunos, 0);
+                totalTurmasGeral += turmas.length;
+                totalAlunosGeral += totalAlunosBloco;
+
+                const blockCard = document.createElement('div');
+                blockCard.id = `bloco-card-${bloco.key}`;
+                blockCard.className = 'bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden print-break-inside-avoid';
+
+                blockCard.innerHTML = `
+                    <div class="bg-slate-800 text-white px-5 py-3.5 flex justify-between items-center border-b border-slate-700">
+                        <div class="flex items-center gap-3">
+                            <span class="${bloco.corBadge} text-white px-2.5 py-1 rounded text-xs font-bold uppercase tracking-wider">
+                                ${bloco.titulo}
+                            </span>
+                        </div>
+                        <div class="text-xs font-medium text-slate-300 flex gap-4">
+                            <span>Turmas: <strong class="text-white">${turmas.length}</strong></span>
+                            <span>Alunos: <strong class="text-white">${totalAlunosBloco}</strong></span>
+                        </div>
+                    </div>
+                    <div class="overflow-x-auto">
+                        <table class="w-full text-center border-collapse text-xs">
+                            <thead>
+                                <tr class="bg-slate-100 text-slate-700 font-bold border-b border-slate-200 uppercase">
+                                    <th class="p-3 w-32 text-center">HORÁRIO</th>
+                                    <th class="p-3 text-center">PROFESSOR</th>
+                                    <th class="p-3 text-center">TURMA</th>
+                                    <th class="p-3 w-28 text-center">Nº DE ALUNOS</th>
+                                    <th class="p-3 w-28 text-center">INÍCIO</th>
+                                    <th class="p-3 w-28 text-center">TÉRMINO</th>
+                                    <th class="p-3 w-24 text-center">SALA</th>
+                                </tr>
+                            </thead>
+                            <tbody class="divide-y divide-slate-100">
+                                ${turmas.map((t) => {
+                                    const corLinha = obterCorPorBlocoHorario(t.minutosInicio);
+                                    return `
+                                        <tr class="${corLinha} transition-colors">
+                                            <td class="p-3 font-bold text-slate-900 text-center">${escapeHtml(t.horario)}</td>
+                                            <td class="p-3 font-semibold text-slate-700 text-center">${escapeHtml(t.professor)}</td>
+                                            <td class="p-3 font-bold text-slate-900 text-center">${escapeHtml(t.turma)}</td>
+                                            <td class="p-3 text-center font-bold text-slate-800">${t.alunos}</td>
+                                            <td class="p-3 text-center text-slate-600">${escapeHtml(t.inicio)}</td>
+                                            <td class="p-3 text-center text-slate-600">${escapeHtml(t.termino)}</td>
+                                            <td class="p-3 text-center font-semibold text-slate-700">${escapeHtml(t.sala)}</td>
+                                        </tr>
+                                    `;
+                                }).join('')}
+                            </tbody>
+                        </table>
+                    </div>
+                `;
+
+                mapaBlocosContainer.appendChild(blockCard);
+            });
+
+            statTotalTurmas.textContent = totalTurmasGeral;
+            statTotalAlunos.textContent = totalAlunosGeral;
+            badgeResumoRapido.classList.remove('hidden');
+
+            filtrarDia(diaFiltroAtual);
+        }
+
+        window.filtrarDia = function(diaKey) {
+            diaFiltroAtual = diaKey;
+            const keys = ['TODOS', 'SEG_QUA', 'TER_QUI', 'TERCA', 'QUINTA', 'SEXTA', 'SABADO'];
+
+            keys.forEach(k => {
+                const btn = document.getElementById(`tab-dia-${k}`);
+                if (btn) {
+                    btn.className = k === diaKey 
+                        ? "px-3 py-1.5 rounded-lg text-xs font-bold transition-all bg-slate-900 text-white shadow-sm"
+                        : "px-3 py-1.5 rounded-lg text-xs font-bold transition-all text-slate-600 hover:bg-white";
+                }
+
+                const card = document.getElementById(`bloco-card-${k}`);
+                if (card) {
+                    if (diaKey === 'TODOS' || diaKey === k) {
+                        card.classList.remove('hidden');
+                    } else {
+                        card.classList.add('hidden');
+                    }
+                }
+            });
+        };
+
+        document.getElementById('btn-export-mapa').addEventListener('click', () => {
+            const semestre = semestreInput.value.trim() || '2026/2';
+            const exportRows = [];
+
+            const keys = ['SEG_QUA', 'TER_QUI', 'TERCA', 'QUINTA', 'SEXTA', 'SABADO', 'OUTROS'];
+            keys.keyEach?.(key => {}); // safe
+            keys.forEach(key => {
+                const turmas = mapData[key] || [];
+                turmas.forEach(t => {
+                    exportRows.push({
+                        'Unidade': `CNA ${unidadeAtual}`,
+                        'Semestre': semestre,
+                        'Bloco / Dia': key.replace('_', ' e '),
+                        'Horário': t.horario,
+                        'Professor': t.professor,
+                        'Turma': t.turma,
+                        'Nº de Alunos': t.alunos,
+                        'Data Início': t.inicio,
+                        'Data Término': t.termino,
+                        'Sala': t.sala
+                    });
+                });
+            });
+
+            if (exportRows.length === 0) return;
+
+            const worksheet = XLSX.utils.json_to_sheet(exportRows);
+            const workbook = XLSX.utils.book_new();
+            XLSX.utils.book_append_sheet(workbook, worksheet, `Mapa ${unidadeAtual}`);
+
+            const semClean = semestre.replace(/\//g, '_');
+            const uniClean = unidadeAtual.replace(/\s+/g, '_');
+            XLSX.writeFile(workbook, `Mapa_de_Turmas_CNA_${uniClean}_${semClean}.xlsx`);
+        });
+
+        function escapeHtml(text) {
+            return text ? text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;") : '';
+        }
+    </script>
+</body>
+</html>
